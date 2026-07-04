@@ -14,8 +14,16 @@ export type CogsConnectionParams = {
     "API Key": string;
     "Bridge IP Address": string;
     "Default Scene": string;
+    "Transition Time (Project Default)": number;
   };
-  inputEvents: { "Show Scene": string };
+  inputEvents: {
+    "Show Scene": string;
+    "Start Flicker": string;
+    "Stop Flicker": string;
+    "Start Colorloop": string;
+    "Start Party": string;
+    "Stop Effect": string;
+  };
 };
 
 export default function App() {

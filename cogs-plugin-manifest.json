@@ -12,10 +12,21 @@
     {
       "name": "Default Scene",
       "value": { "type": "string" }
+    },
+    {
+      "name": "Transition Time (Project Default)",
+      "value": { "type": "number", "integer": true, "min": 0 }
     }
   ],
   "events": {
-    "fromCogs": [{ "name": "Show Scene", "value": { "type": "string" } }],
+    "fromCogs": [
+      { "name": "Show Scene", "value": { "type": "string" } },
+      { "name": "Start Flicker", "value": { "type": "string" } },
+      { "name": "Stop Flicker", "value": { "type": "option", "options": ["stop"] } },
+      { "name": "Start Colorloop", "value": { "type": "string" } },
+      { "name": "Start Party", "value": { "type": "string" } },
+      { "name": "Stop Effect", "value": { "type": "string" } }
+    ],
     "toCogs:": []
   }
 }
