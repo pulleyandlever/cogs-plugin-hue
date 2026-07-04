@@ -51,6 +51,7 @@ export class HueClient {
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private lastBeat = Date.now();
   private lastThrottleWarning = 0;
+  private effectGeneration = 0;
 
   constructor(private config: HueClientConfig) {
     // Watchdog: browsers throttle timers in hidden/backgrounded windows
@@ -204,10 +205,13 @@ export class HueClient {
       return;
     }
     this.clearEffectTimers();
+    const generation = this.effectGeneration;
     this.strobeGroupId = groupId;
 
     if (sceneName) {
       const scene = await this.resolveScene(sceneName);
+      // Another effect op arrived while we were resolving — stand down
+      if (generation !== this.effectGeneration) return;
       if (scene) {
         const label = `Flicker scene recall "${sceneName}"`;
         void this.reported(
@@ -301,9 +305,13 @@ export class HueClient {
       return;
     }
     this.clearEffectTimers();
+    const generation = this.effectGeneration;
 
     const groupResult = await hueGet("Fetch group lights", this.url(`groups/${groupId}`));
     this.noteBridgeResult(groupResult);
+    // Another effect op arrived while we were fetching — stand down
+    // (installing our interval now would leak it forever)
+    if (generation !== this.effectGeneration) return;
     if (!groupResult.ok) {
       this.emit({
         type: "command",
@@ -384,6 +392,10 @@ export class HueClient {
   }
 
   private clearEffectTimers(): void {
+    // Invalidates any effect start still awaiting a network call, so it
+    // can't install its timer after being superseded (which would leak
+    // an uncancellable "ghost" interval — found by the 30-minute soak).
+    this.effectGeneration++;
     this.strobeGroupId = undefined;
     if (this.strobeKeepAlive !== undefined) {
       clearInterval(this.strobeKeepAlive);

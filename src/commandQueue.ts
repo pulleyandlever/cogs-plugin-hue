@@ -45,7 +45,11 @@ interface QueuedCommand extends EnqueueOptions {
 }
 
 const COSTS: Record<CommandKind, number> = { group: 8, light: 1 };
-const RATE = 9; // tokens/sec (bridge refills ~10/sec — headroom for jitter)
+// tokens/sec. The bridge refills ~10/sec; the 30-minute soak showed
+// that at 9/sec sustained saturation leaves group commands only ~1
+// token of margin at the bridge and ~20% of them get dropped. 8/sec
+// keeps a 2-token/sec cushion even under hours of effect load.
+const RATE = 8;
 const CAPACITY = 10;
 const RETRY_DELAY_MS = 250;
 // Measured on real hardware (bridge-probe2): once a bridge starts

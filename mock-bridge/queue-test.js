@@ -270,6 +270,40 @@ async function scenarioG() {
   );
 }
 
+async function scenarioH() {
+  console.log("\n─── Scenario H: overlapping effect starts must not leak ghost timers");
+  await reset();
+  const client = makeClient();
+  await client.refreshScenes();
+
+  // Fire effect starts into each other's async setup windows (each
+  // start awaits a bridge fetch before installing its interval — the
+  // 30-min soak found intervals leaking here)
+  void client.startParty("0|250");
+  void client.startParty("1|250");
+  void client.startFlicker("1");
+  await sleep(1500);
+  await client.stopEffect("0");
+  await client.stopFlicker();
+  await sleep(2000);
+
+  const countPuts = async () =>
+    (await getJson(`${BASE}/_test/log`)).filter((e) => e.method === "PUT").length;
+  const before = await countPuts();
+  await sleep(3000);
+  const after = await countPuts();
+  const ghostPuts = after - before;
+  const depth = client.queueDepth;
+  client.dispose();
+  console.log(`    PUTs in 3s quiet window after stop: ${ghostPuts}, queue depth: ${depth}`);
+  check(
+    "H",
+    "after stopping all effects, no ghost timer keeps sending",
+    ghostPuts === 0 && depth === 0,
+    `${ghostPuts} PUTs arrived after everything was stopped (must be 0), queue depth ${depth}`
+  );
+}
+
 async function main() {
   const server = spawn("node", [path.join(__dirname, "server.js")], {
     env: { ...process.env, PORT: String(PORT) },
@@ -294,6 +328,7 @@ async function main() {
     await scenarioE();
     await scenarioF();
     await scenarioG();
+    await scenarioH();
   } finally {
     server.kill();
   }
