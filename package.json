@@ -14,6 +14,7 @@
     "build-manifest": "mkdir -p build/dog.clockwork.hue && cp -fv cogs-plugin-manifest.json build/dog.clockwork.hue/cogs-plugin-manifest.json",
     "build": "yarn build-content && yarn build-manifest",
     "test": "react-scripts test",
+    "test:reliability": "tsc -p tsconfig.queue.json && node mock-bridge/queue-test.js",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {

@@ -38,15 +38,21 @@ Over-budget commands are silently dropped but still return HTTP 200 — matching
 the worst real bridge behavior. No dependencies; plain Node.
 
 ```
-node mock-bridge/server.js          # starts on http://127.0.0.1:8090
-node mock-bridge/burst-test.js      # runs the cue-reliability scenarios
+npm run test:reliability            # regression suite: HueClient + queue vs mock bridge
 ```
 
-The burst test reproduces the known failure modes of the current un-queued
-implementation: rapid cues dropped (B), effects starving scene cues (C), and
-duplicate scene names addressing the wrong lights (D). Once the command queue
-lands (Phase 1), the same scenarios become the regression suite and are
-expected to pass instead.
+This compiles the real `HueClient`/`CommandQueue` from `src/` and drives the
+cue-reliability scenarios through them (spawns its own mock bridge on :8091).
+All four must pass: well-spaced cues land with no queue delay, rapid cues are
+never dropped (stale ones are superseded, final state = last cue), a cue
+preempts a running effect, and duplicate scene names resolve to the newest.
+
+The historical failure modes can still be demonstrated by bypassing the queue:
+
+```
+node mock-bridge/server.js          # starts on http://127.0.0.1:8090
+node mock-bridge/burst-test.js      # un-queued behavior: reproduces the old bugs
+```
 
 Test-only endpoints: `GET /_test/state`, `GET /_test/log`, `POST /_test/reset`.
 

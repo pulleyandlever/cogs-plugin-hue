@@ -29,17 +29,22 @@ function extractV1Errors(json: unknown): string[] {
     });
 }
 
+const DEFAULT_TIMEOUT_MS = 3000;
+
 export async function hueRequest(
   label: string,
   url: string,
-  init?: RequestInit
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<HueCallResult> {
   const id = ++callCounter;
   const method = init?.method ?? "GET";
   const started = performance.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, init);
+    const response = await fetch(url, { ...init, signal: controller.signal });
     const durationMs = Math.round(performance.now() - started);
 
     let json: unknown;
@@ -67,19 +72,31 @@ export async function hueRequest(
     return { ok, httpStatus: response.status, errors, durationMs, json };
   } catch (e) {
     const durationMs = Math.round(performance.now() - started);
-    const message = e instanceof Error ? e.message : String(e);
+    const message =
+      e instanceof Error && e.name === "AbortError"
+        ? `timed out after ${timeoutMs}ms`
+        : e instanceof Error
+        ? e.message
+        : String(e);
     console.error(
       `[Hue #${id}] ${label}: ${method} ${url} — UNREACHABLE in ${durationMs}ms:`,
       message
     );
     return { ok: false, errors: [message], durationMs };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-export function huePut(label: string, url: string, body: unknown): Promise<HueCallResult> {
-  return hueRequest(label, url, { method: "PUT", body: JSON.stringify(body) });
+export function huePut(
+  label: string,
+  url: string,
+  body: unknown,
+  timeoutMs?: number
+): Promise<HueCallResult> {
+  return hueRequest(label, url, { method: "PUT", body: JSON.stringify(body) }, timeoutMs);
 }
 
-export function hueGet(label: string, url: string): Promise<HueCallResult> {
-  return hueRequest(label, url);
+export function hueGet(label: string, url: string, timeoutMs?: number): Promise<HueCallResult> {
+  return hueRequest(label, url, undefined, timeoutMs);
 }

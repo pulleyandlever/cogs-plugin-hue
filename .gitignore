@@ -8,3 +8,4 @@ cogs-hue-control-plugin.zip
 .DS_Store
 package-lock.json
 /BlueFondue
+/mock-bridge/dist

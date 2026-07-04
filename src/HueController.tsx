@@ -4,51 +4,13 @@ import {
   useCogsEvent,
   useWhenShowReset,
 } from "@clockworkdog/cogs-client-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 import { CogsConnectionParams } from "./App";
-import { hueGet, huePut } from "./hueApi";
-import { HueScenes } from "./types";
+import { HueClient } from "./hueClient";
 
-const getScenesUrl = (ipAddress: string, apiKey: string) =>
-  `http://${ipAddress}/api/${apiKey}/scenes`;
-
-const recallSceneUrl = (ipAddress: string, apiKey: string) =>
-  `http://${ipAddress}/api/${apiKey}/groups/0/action`;
-
-const groupActionUrl = (ipAddress: string, apiKey: string, groupId: string) =>
-  `http://${ipAddress}/api/${apiKey}/groups/${groupId}/action`;
-
-const groupUrl = (ipAddress: string, apiKey: string, groupId: string) =>
-  `http://${ipAddress}/api/${apiKey}/groups/${groupId}`;
-
-const lightStateUrl = (ipAddress: string, apiKey: string, lightId: string) =>
-  `http://${ipAddress}/api/${apiKey}/lights/${lightId}/state`;
-
-function findSceneByName(scenes: HueScenes, sceneName: string) {
-  if (scenes) {
-    return Object.entries(scenes).find(
-      ([id, scene]) => scene.name === sceneName
-    )?.[0];
-  }
-}
-
-// Module-level refs so stop actions can always reach the running timers
-let strobeGroupId: string | undefined;
-let strobeKeepAlive: ReturnType<typeof setInterval> | undefined;
-let partyInterval: ReturnType<typeof setInterval> | undefined;
-
-function clearEffectIntervals() {
-  strobeGroupId = undefined;
-  if (strobeKeepAlive !== undefined) {
-    clearInterval(strobeKeepAlive);
-    strobeKeepAlive = undefined;
-  }
-  if (partyInterval !== undefined) {
-    clearInterval(partyInterval);
-    partyInterval = undefined;
-  }
-}
-
+// Thin wiring layer: creates a HueClient from the COGS config and
+// forwards COGS events to it. All bridge logic (scene cache, command
+// queue, effect timers) lives in HueClient, outside React.
 export default function HueController() {
   const connection = useCogsConnection<CogsConnectionParams>();
 
@@ -57,264 +19,47 @@ export default function HueController() {
   const defaultScene = useCogsConfig(connection)["Default Scene"];
   const transitionTime = useCogsConfig(connection)["Transition Time (Project Default)"];
 
-  const [scenes, setScenes] = useState<HueScenes>();
+  const clientRef = useRef<HueClient | null>(null);
 
-  const getScenesFromBridge = useCallback(async () => {
-    if (!bridgeIpAddress) {
-      console.warn("Bridge IP address not set");
+  useEffect(() => {
+    if (!apiKey || !bridgeIpAddress) {
+      if (!bridgeIpAddress) console.warn("Bridge IP address not set");
+      if (!apiKey) console.warn("API Key not set");
       return;
     }
-    if (!apiKey) {
-      console.warn("API Key not set");
-      return;
-    }
-    const result = await hueGet("Fetch scenes", getScenesUrl(bridgeIpAddress, apiKey));
-    if (result.ok && result.json) {
-      const scenesData = result.json as HueScenes;
-      const names = Object.values(scenesData).map((s) => s.name);
-      const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
-      if (duplicates.length > 0) {
-        console.warn(
-          "[Hue] Duplicate scene names on bridge — name lookup may pick the wrong one:",
-          Array.from(new Set(duplicates)).join(", ")
-        );
+    const client = new HueClient({
+      bridgeIp: bridgeIpAddress,
+      apiKey,
+      defaultTransitionTime: transitionTime,
+    });
+    clientRef.current = client;
+
+    client.refreshScenes().then((ok) => {
+      if (ok && defaultScene) {
+        client.showScene(defaultScene);
       }
-      setScenes(scenesData);
-      return scenesData;
-    }
-    return undefined;
-  }, [apiKey, bridgeIpAddress]);
+    });
 
-  const showScene = useCallback(
-    async (eventValue: string) => {
-      const pipeIndex = eventValue.lastIndexOf("|");
-      let sceneName: string;
-      let cueTransitionTime: number | undefined;
-
-      if (pipeIndex !== -1) {
-        sceneName = eventValue.slice(0, pipeIndex);
-        const parsed = parseInt(eventValue.slice(pipeIndex + 1), 10);
-        if (!isNaN(parsed)) {
-          cueTransitionTime = parsed;
-        }
-      } else {
-        sceneName = eventValue;
-      }
-
-      const effectiveTransitionTime = cueTransitionTime ?? transitionTime;
-
-      console.log("Showing scene with name", sceneName);
-      try {
-        let sceneId = scenes ? findSceneByName(scenes, sceneName) : undefined;
-        console.log("Found sceneId", sceneId);
-
-        // If can't find the scene, maybe we don't have the scenes yet or the scene is newly added - try and fetch again
-        if (!sceneId) {
-          console.log("Couldn't find scene ID - fetching scenes again");
-          const refreshedScenes = await getScenesFromBridge();
-
-          if (refreshedScenes) {
-            sceneId = findSceneByName(refreshedScenes, sceneName);
-            console.log("Now found sceneId", sceneId);
-          }
-        }
-
-        // If we now have an ID - recall the scene
-        if (sceneId) {
-          const body: Record<string, unknown> = { scene: sceneId };
-          if (effectiveTransitionTime !== undefined) {
-            body.transitiontime = effectiveTransitionTime;
-          }
-          await huePut(
-            `Show Scene "${sceneName}"`,
-            recallSceneUrl(bridgeIpAddress, apiKey),
-            body
-          );
-        } else {
-          console.error(`[Hue] Show Scene "${sceneName}": no scene with this name on bridge`);
-        }
-      } catch (e) {
-        console.error("Failed to set scene", sceneName, e);
-      }
-    },
-    [getScenesFromBridge, apiKey, bridgeIpAddress, scenes, transitionTime]
-  );
-
-  const showDefaultScene = useCallback(
-    () => showScene(defaultScene),
-    [showScene, defaultScene]
-  );
-
-  // "Start Flicker" event value: "groupId" or "groupId|sceneName"
-  //   e.g. "1" — flicker group 1 at its current light state
-  //   e.g. "1|Candlelight" — recall the Candlelight scene on group 1, then flicker
-  //
-  // Uses the bridge's native alert:lselect effect (firmware-level, ~2Hz).
-  // When a scene name is given the scene is recalled first so the flicker
-  // uses that scene's colours and brightness rather than whatever state the
-  // lights happen to be in.
-  const startFlicker = useCallback(
-    async (eventValue: string) => {
-      const [groupId, sceneName] = eventValue.split("|");
-      const url = groupActionUrl(bridgeIpAddress, apiKey, groupId);
-
-      clearEffectIntervals();
-      strobeGroupId = groupId;
-
-      // If a scene name was provided, recall it before triggering the flicker
-      if (sceneName) {
-        let sceneId = scenes ? findSceneByName(scenes, sceneName) : undefined;
-        if (!sceneId) {
-          const refreshed = await getScenesFromBridge();
-          if (refreshed) sceneId = findSceneByName(refreshed, sceneName);
-        }
-        if (sceneId) {
-          await huePut(`Flicker scene recall "${sceneName}"`, url, {
-            scene: sceneId,
-            transitiontime: 0,
-          });
-          // Short pause so lights settle into the scene before the alert fires
-          await new Promise<void>((r) => setTimeout(r, 200));
-        } else {
-          console.warn("Flicker: scene not found —", sceneName);
-        }
-      }
-
-      const sendAlert = () => huePut("Flicker alert", url, { alert: "lselect" });
-
-      await sendAlert();
-
-      // lselect runs for 15s — re-send every 10s to keep it going indefinitely
-      strobeKeepAlive = setInterval(sendAlert, 10000);
-    },
-    [apiKey, bridgeIpAddress, scenes, getScenesFromBridge]
-  );
-
-  // "Stop Flicker" value is "stop" (option type) — sends alert:none for an
-  // immediate clean stop, then clears the keep-alive interval
-  const stopFlicker = useCallback(async () => {
-    const groupId = strobeGroupId;
-    clearEffectIntervals();
-    if (groupId) {
-      await huePut("Stop flicker", groupActionUrl(bridgeIpAddress, apiKey, groupId), {
-        alert: "none",
-      });
-    }
-  }, [apiKey, bridgeIpAddress]);
-
-  // "Start Colorloop" event value: "groupId|brightness|saturation"  e.g. "0|254|254"
-  // Uses the bridge's native colorloop effect — zero plugin overhead
-  const startColorloop = useCallback(
-    async (eventValue: string) => {
-      const parts = eventValue.split("|");
-      const groupId = parts[0];
-      const bri = parseInt(parts[1], 10) || 254;
-      const sat = parseInt(parts[2], 10) || 254;
-
-      clearEffectIntervals();
-
-      await huePut("Start colorloop", groupActionUrl(bridgeIpAddress, apiKey, groupId), {
-        on: true,
-        bri,
-        sat,
-        effect: "colorloop",
-      });
-    },
-    [apiKey, bridgeIpAddress]
-  );
-
-  // "Start Party" event value: "groupId|speedMs"  e.g. "0|300"
-  // Fetches the group's individual light IDs then fires staggered random-hue updates
-  const startParty = useCallback(
-    async (eventValue: string) => {
-      const [groupId, speedStr] = eventValue.split("|");
-      const speed = Math.max(100, parseInt(speedStr, 10) || 300);
-      const staggerMs = 150;
-
-      clearEffectIntervals();
-
-      const groupResult = await hueGet(
-        "Fetch group lights",
-        groupUrl(bridgeIpAddress, apiKey, groupId)
-      );
-      if (!groupResult.ok) return;
-      const lightIds: string[] =
-        (groupResult.json as { lights?: string[] } | undefined)?.lights ?? [];
-
-      if (lightIds.length === 0) {
-        console.warn("No lights found in group", groupId);
-        return;
-      }
-
-      partyInterval = setInterval(() => {
-        lightIds.forEach((lightId, i) => {
-          setTimeout(() => {
-            huePut(`Party light ${lightId}`, lightStateUrl(bridgeIpAddress, apiKey, lightId), {
-              on: true,
-              hue: Math.floor(Math.random() * 65536),
-              sat: 200 + Math.floor(Math.random() * 56),
-              bri: 200 + Math.floor(Math.random() * 56),
-              transitiontime: Math.max(1, Math.floor(speed / 100)),
-            });
-          }, i * staggerMs);
-        });
-      }, speed);
-    },
-    [apiKey, bridgeIpAddress]
-  );
-
-  // "Stop Effect" event value: "groupId"  e.g. "0"
-  // Clears any running intervals and sends effect:"none" to the bridge
-  const stopEffect = useCallback(
-    async (groupId: string) => {
-      clearEffectIntervals();
-      await huePut("Stop effect", groupActionUrl(bridgeIpAddress, apiKey, groupId), {
-        effect: "none",
-      });
-    },
-    [apiKey, bridgeIpAddress]
-  );
-
-  // Find scenes on first load
-  useEffect(() => {
-    if (
-      !scenes &&
-      apiKey !== undefined &&
-      bridgeIpAddress !== undefined &&
-      defaultScene !== undefined
-    ) {
-      getScenesFromBridge().then(() => {
-        if (defaultScene) {
-          showDefaultScene();
-        }
-      });
-    }
-  }, [
-    scenes,
-    apiKey,
-    bridgeIpAddress,
-    defaultScene,
-    getScenesFromBridge,
-    showDefaultScene,
-  ]);
-
-  // Clean up any running intervals when the component unmounts
-  useEffect(() => {
     return () => {
-      clearEffectIntervals();
+      client.dispose();
+      if (clientRef.current === client) clientRef.current = null;
     };
-  }, []);
+  }, [apiKey, bridgeIpAddress, transitionTime, defaultScene]);
 
-  useCogsEvent(connection, "Show Scene", showScene);
-  useCogsEvent(connection, "Start Flicker", startFlicker);
-  useCogsEvent(connection, "Stop Flicker", stopFlicker);
-  useCogsEvent(connection, "Start Colorloop", startColorloop);
-  useCogsEvent(connection, "Start Party", startParty);
-  useCogsEvent(connection, "Stop Effect", stopEffect);
+  useCogsEvent(connection, "Show Scene", (value) => clientRef.current?.showScene(value));
+  useCogsEvent(connection, "Start Flicker", (value) => clientRef.current?.startFlicker(value));
+  useCogsEvent(connection, "Stop Flicker", () => clientRef.current?.stopFlicker());
+  useCogsEvent(connection, "Start Colorloop", (value) => clientRef.current?.startColorloop(value));
+  useCogsEvent(connection, "Start Party", (value) => clientRef.current?.startParty(value));
+  useCogsEvent(connection, "Stop Effect", (value) => clientRef.current?.stopEffect(value));
 
   useWhenShowReset(connection, () => {
-    clearEffectIntervals();
-    showDefaultScene();
+    const client = clientRef.current;
+    if (!client) return;
+    client.stopAllEffects();
+    if (defaultScene) {
+      client.showScene(defaultScene);
+    }
   });
 
   return null;

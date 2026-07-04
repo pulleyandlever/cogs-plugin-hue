@@ -57,16 +57,19 @@ function initialState() {
         name: "Blackout",
         lights: ["1", "2"],
         state: { on: false },
+        lastupdated: "2024-03-01T10:00:00",
       },
       "real-blackout": {
         name: "Blackout",
         lights: ["1", "2", "3", "4", "5", "6", "7", "8"],
         state: { on: false },
+        lastupdated: "2026-05-20T19:30:00",
       },
       "house-full": {
         name: "House Full",
         lights: ["1", "2", "3", "4", "5", "6", "7", "8"],
         state: { on: true, bri: 254, hue: 8000, sat: 140 },
+        lastupdated: "2026-05-20T19:00:00",
       },
       ...Object.fromEntries(
         Array.from({ length: 10 }, (_, i) => [
@@ -75,6 +78,7 @@ function initialState() {
             name: `Cue ${i + 1}`,
             lights: ["1", "2", "3", "4", "5", "6", "7", "8"],
             state: { on: true, bri: 200, hue: (i + 1) * 6000, sat: 254 },
+            lastupdated: "2026-05-20T18:00:00",
           },
         ])
       ),
@@ -191,7 +195,7 @@ function route(req, res, body) {
     record({ method: "GET", path: "scenes", applied: true });
     const out = {};
     for (const [id, s] of Object.entries(state.scenes)) {
-      out[id] = { name: s.name, lights: s.lights };
+      out[id] = { name: s.name, lights: s.lights, lastupdated: s.lastupdated };
     }
     return send(res, 200, out);
   }
