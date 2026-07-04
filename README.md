@@ -39,6 +39,31 @@ Usable in behaviours, e.g. to alert the operator when something fails:
 | Cue Failed | description (string) | A cue failed after retry, or a scene name wasn't found |
 | Bridge Online | boolean | Bridge reachability changes (in either direction) |
 
+## Show-day checklist
+
+Before a run of shows:
+
+- [ ] **Reserve the bridge's IP** in the venue router (DHCP reservation) —
+      a lease change mid-run silently breaks everything.
+- [ ] **Disable automatic firmware updates** in the Hue app (Settings →
+      Software update → Automatic update off) for the duration of the run.
+- [ ] **Remove other Hue traffic**: no Hue app on phones on the show
+      network, no voice assistants, no motion sensors/smart switches
+      paired to the show bridge. Anything else talking to the bridge
+      spends the same radio budget as your cues.
+- [ ] **Keep the plugin window visible.** Browsers throttle timers in
+      hidden/backgrounded windows, which stalls cue pacing. The plugin
+      warns in its status panel if this happens ("Timers stalled…"), but
+      prevention beats detection.
+- [ ] **Check scene names are unique** on the bridge — the panel warns at
+      startup if duplicates exist (it uses the newest, but tidy is safer).
+- [ ] **Probe the show bridge once** (see "Characterizing a real bridge")
+      with the full rig paired, and glance at the numbers.
+- [ ] During tech: watch the status panel through the fastest cue
+      sequences. Every GO should log a ✓ within ~1s.
+- [ ] Wire the `Cue Failed` and `Bridge Online` events to something the
+      operator will actually notice.
+
 ## Reliability model
 
 Every bridge command goes through a client-side queue that mirrors the Hue

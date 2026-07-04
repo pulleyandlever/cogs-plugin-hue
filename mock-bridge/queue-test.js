@@ -209,6 +209,67 @@ async function scenarioE() {
   );
 }
 
+async function scenarioF() {
+  console.log("\n─── Scenario F: bridge overloaded (901) — retry with overload backoff recovers");
+  await reset();
+  const client = makeClient();
+  await client.refreshScenes();
+
+  // Force the bridge into its measured overload state for 600ms
+  await fetch(`${BASE}/_test/overload`, { method: "POST", body: JSON.stringify({ ms: 600 }) });
+  const t0 = Date.now();
+  const result = await client.showScene("Cue 2");
+  const elapsed = Date.now() - t0;
+  await sleep(300);
+
+  const log = await getJson(`${BASE}/_test/log`);
+  const rejected = log.filter((e) => e.reason === "overloaded").length;
+  const applied = log.filter((e) => e.applied && e.path.includes("/action")).length;
+  console.log(`    outcome="${result.outcome}" after ${elapsed}ms (901 rejections: ${rejected}, applied: ${applied})`);
+  check(
+    "F",
+    "a 901-overloaded bridge: first attempt rejected, backoff retry lands the cue",
+    result.outcome === "sent" && rejected >= 1 && applied === 1 && elapsed >= 700,
+    `cue landed on retry after ${elapsed}ms (backoff 800ms) despite ${rejected} overload rejection(s)`
+  );
+  client.dispose();
+}
+
+async function scenarioG() {
+  console.log("\n─── Scenario G: flaky venue WiFi — 25% of connections dropped mid-request");
+  const FLAKY_PORT = PORT + 1;
+  const flakyServer = spawn("node", [path.join(__dirname, "server.js")], {
+    env: { ...process.env, PORT: String(FLAKY_PORT), FLAKY_DROP: "0.25" },
+    stdio: "ignore",
+  });
+  await sleep(500);
+
+  const client = new HueClient({ bridgeIp: `127.0.0.1:${FLAKY_PORT}`, apiKey: "testkey" });
+  // Initial scene fetch has no retry of its own — try a few times, like
+  // a startup would across polling attempts
+  let refreshed = false;
+  for (let i = 0; i < 6 && !refreshed; i++) refreshed = await client.refreshScenes();
+
+  const outcomes = [];
+  for (let i = 1; i <= 6; i++) {
+    outcomes.push(await client.showScene(`Cue ${i}`));
+    await sleep(1100);
+  }
+  client.dispose();
+  flakyServer.kill();
+
+  const sent = outcomes.filter((o) => o.outcome === "sent").length;
+  const failed = outcomes.filter((o) => o.outcome === "failed").length;
+  const unaccounted = outcomes.filter((o) => !["sent", "failed"].includes(o.outcome)).length;
+  console.log(`    outcomes: ${outcomes.map((o) => o.outcome).join(", ")}`);
+  check(
+    "G",
+    "flaky transport: retries absorb drops, every cue outcome is reported, no silent losses",
+    refreshed && sent >= 4 && unaccounted === 0,
+    `${sent}/6 cues landed (retry absorbs single drops), ${failed} reported failed, 0 unaccounted`
+  );
+}
+
 async function main() {
   const server = spawn("node", [path.join(__dirname, "server.js")], {
     env: { ...process.env, PORT: String(PORT) },
@@ -231,6 +292,8 @@ async function main() {
     await scenarioC();
     await scenarioD();
     await scenarioE();
+    await scenarioF();
+    await scenarioG();
   } finally {
     server.kill();
   }

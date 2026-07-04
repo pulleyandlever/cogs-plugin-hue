@@ -8,9 +8,20 @@
 // commands/sec) and the interaction where heavy light traffic starves
 // group/scene commands.
 //
-// Over-budget commands are SILENTLY DROPPED but still return HTTP 200
-// with a success body — matching the worst observed bridge behavior.
-// Set OVERLOAD=503 to return errors instead.
+// Over-budget behavior (OVERLOAD env):
+//   drop (default) — silently dropped behind an HTTP 200 success body:
+//                    the worst plausible behavior, kept as the default
+//                    so regression tests prove the queue needs no error
+//                    signal to be safe.
+//   901            — matches MEASURED real-bridge behavior (BSB002 fw
+//                    1977138000): over-budget commands are rejected
+//                    with a "901 Internal error" body inside HTTP 200,
+//                    and the bridge stays overloaded for a recovery
+//                    tail (~1s) during which ALL commands are rejected.
+//   503            — plain HTTP 503 errors.
+//
+// FLAKY_DROP=0.25 makes the transport drop 25% of API connections
+// mid-request (socket destroyed, no response) — simulates venue WiFi.
 //
 // Endpoints (v1):
 //   GET /api/:key/scenes
@@ -27,7 +38,9 @@
 const http = require("http");
 
 const PORT = parseInt(process.env.PORT || "8090", 10);
-const OVERLOAD = process.env.OVERLOAD || "drop"; // "drop" | "503"
+const OVERLOAD = process.env.OVERLOAD || "drop"; // "drop" | "901" | "503"
+const FLAKY_DROP = parseFloat(process.env.FLAKY_DROP || "0");
+const RECOVERY_MS = 1000; // measured: overload persists after the flood stops
 const GROUP_COST = 8;
 const LIGHT_COST = 1;
 const RADIO_RATE = 10; // tokens/sec
@@ -108,7 +121,13 @@ function tryConsume(cost) {
 function resetBudget() {
   tokens = RADIO_CAP;
   lastRefill = Date.now();
+  overloadedUntil = 0;
+  forcedOverloadUntil = 0;
 }
+
+// Overload state (901 mode + test-forced)
+let overloadedUntil = 0;
+let forcedOverloadUntil = 0;
 
 // ------------------------------------------------------------ helpers
 
@@ -188,6 +207,19 @@ function route(req, res, body) {
     resetBudget();
     return send(res, 200, { reset: true });
   }
+  // Force the bridge into its overloaded state for N ms (for testing
+  // the client's 901 backoff path): POST /_test/overload {"ms": 600}
+  if (url === "/_test/overload" && req.method === "POST") {
+    forcedOverloadUntil = Date.now() + (body.ms || 1000);
+    return send(res, 200, { overloadedForMs: body.ms || 1000 });
+  }
+
+  // Flaky transport: kill the connection mid-request, no response
+  if (FLAKY_DROP > 0 && url.startsWith("/api/") && Math.random() < FLAKY_DROP) {
+    record({ method: req.method, path: url, applied: false, reason: "connection-dropped" });
+    res.destroy();
+    return;
+  }
 
   // --- v1 API
   const scenesMatch = url.match(/^\/api\/[^/]+\/scenes$/);
@@ -238,12 +270,22 @@ function route(req, res, body) {
 }
 
 function handleCommand(res, { kind, cost, path, body, apply }) {
+  // Test-forced or lingering overload: reject everything, like the
+  // measured real bridge during its recovery tail.
+  if (Date.now() < forcedOverloadUntil || Date.now() < overloadedUntil) {
+    record({ method: "PUT", path, body, applied: false, reason: "overloaded" });
+    return send(res, 200, v1Error(901, path, "Internal error, 404"));
+  }
   if (!tryConsume(cost)) {
     record({ method: "PUT", path, body, applied: false, reason: "rate-limited" });
     if (OVERLOAD === "503") {
       return send(res, 503, v1Error(901, path, "bridge internal error (overloaded)"));
     }
-    // Worst-case real behavior: claim success, apply nothing.
+    if (OVERLOAD === "901") {
+      overloadedUntil = Date.now() + RECOVERY_MS;
+      return send(res, 200, v1Error(901, path, "Internal error, 404"));
+    }
+    // Worst-case behavior: claim success, apply nothing.
     return send(res, 200, success(body));
   }
   const result = apply();

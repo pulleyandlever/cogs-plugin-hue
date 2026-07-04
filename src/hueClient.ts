@@ -48,8 +48,30 @@ export class HueClient {
   private strobeGroupId: string | undefined;
   private strobeKeepAlive: ReturnType<typeof setInterval> | undefined;
   private partyInterval: ReturnType<typeof setInterval> | undefined;
+  private heartbeat: ReturnType<typeof setInterval> | undefined;
+  private lastBeat = Date.now();
+  private lastThrottleWarning = 0;
 
-  constructor(private config: HueClientConfig) {}
+  constructor(private config: HueClientConfig) {
+    // Watchdog: browsers throttle timers in hidden/backgrounded windows
+    // (down to once per minute), which would stall the command queue's
+    // pacing and all effects. We can't prevent it from inside the page,
+    // but we can make it visible: if the 1s heartbeat fires very late,
+    // warn the operator via the status panel.
+    this.heartbeat = setInterval(() => {
+      const now = Date.now();
+      const lateMs = now - this.lastBeat - 1000;
+      if (lateMs > 3000 && now - this.lastThrottleWarning > 60000) {
+        this.lastThrottleWarning = now;
+        const message = `Timers stalled for ${(lateMs / 1000).toFixed(
+          1
+        )}s — the browser is likely throttling the plugin window. Keep it visible during shows.`;
+        console.warn(`[Hue] ${message}`);
+        this.emit({ type: "warning", message });
+      }
+      this.lastBeat = now;
+    }, 1000);
+  }
 
   private bridgeOnline: boolean | undefined;
 
@@ -379,6 +401,10 @@ export class HueClient {
 
   dispose(): void {
     this.clearEffectTimers();
+    if (this.heartbeat !== undefined) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = undefined;
+    }
     this.queue.dispose();
   }
 }
