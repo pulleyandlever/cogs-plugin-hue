@@ -199,6 +199,9 @@ function route(req, res, body) {
   const url = req.url || "";
 
   // --- test endpoints
+  // Lets a test harness verify it's talking to the server IT spawned,
+  // not a leftover or a concurrent run's server on the same port
+  if (url === "/_test/pid") return send(res, 200, { pid: process.pid });
   if (url === "/_test/state") return send(res, 200, state);
   if (url === "/_test/log") return send(res, 200, log);
   if (url === "/_test/reset" && req.method === "POST") {

@@ -15,7 +15,10 @@
 const { spawn } = require("child_process");
 const path = require("path");
 
-const PORT = 8092;
+// Random port: two concurrent runs must never share a bridge — a fixed
+// port once let two soaks silently hammer one budget and corrupt both
+// results with each other's traffic.
+const PORT = parseInt(process.env.PORT || String(8300 + Math.floor(Math.random() * 500)), 10);
 const BASE = `http://127.0.0.1:${PORT}`;
 const SOAK_SECONDS = parseInt(process.env.SOAK_SECONDS || "30", 10);
 const { HueClient } = require("./dist/hueClient");
@@ -31,12 +34,21 @@ async function main() {
   });
   await sleep(500);
   try {
-    await fetch(`${BASE}/_test/state`);
+    const pidInfo = await getJson(`${BASE}/_test/pid`);
+    if (pidInfo.pid !== server.pid) {
+      console.error(
+        `Port ${PORT} is already owned by another mock bridge (pid ${pidInfo.pid}) — ` +
+          "aborting to avoid cross-contaminated results. Just re-run."
+      );
+      server.kill();
+      process.exit(1);
+    }
   } catch {
     console.error("Mock bridge failed to start");
     server.kill();
     process.exit(1);
   }
+  await fetch(`${BASE}/_test/reset`, { method: "POST" });
 
   const stats = { sent: 0, superseded: 0, failed: 0, warnings: 0, ops: 0 };
   const failures = [];
