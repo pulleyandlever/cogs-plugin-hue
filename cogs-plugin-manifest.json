@@ -1,7 +1,7 @@
 {
   "name": "Hue Control",
-  "version": "0.2.1",
-  "description": "Basic Hue controller",
+  "version": "0.3.0",
+  "description": "Reliable Hue controller with cue queueing and status reporting",
   "icon": "lightbulb-on",
   "config": [
     { "name": "API Key", "value": { "type": "string" } },

@@ -13,12 +13,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Use Node.js 16.x
+      - name: Use Node.js 20.x
         uses: actions/setup-node@v3
         with:
-          node-version: 16.x
+          node-version: 20.x
           cache: "yarn"
       - run: yarn
+      - name: Unit tests
+        run: yarn test --watchAll=false
+        env:
+          CI: "true"
+      - name: Reliability regression suite
+        run: yarn test:reliability
+      - name: Soak test (60s)
+        run: yarn test:soak
+        env:
+          SOAK_SECONDS: "60"
       - run: yarn build
       - working-directory: build
         run: zip -r dog.clockwork.hue.zip dog.clockwork.hue

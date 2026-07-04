@@ -4,6 +4,12 @@
 // a newer cue always supersedes a stale one.
 
 import { CommandQueue, ExecuteResult, QueuedCommandResult } from "./commandQueue";
+import {
+  parseColorloopValue,
+  parseFlickerValue,
+  parsePartyValue,
+  parseShowSceneValue,
+} from "./cueParsing";
 import { HueCallResult, hueGet, huePut } from "./hueApi";
 import { HueScenes } from "./types";
 
@@ -130,16 +136,7 @@ export class HueClient {
 
   /** Event value: "sceneName" or "sceneName|transitionTimeDeciseconds" */
   async showScene(eventValue: string): Promise<QueuedCommandResult> {
-    const pipeIndex = eventValue.lastIndexOf("|");
-    let sceneName = eventValue;
-    let cueTransitionTime: number | undefined;
-    if (pipeIndex !== -1) {
-      const parsed = parseInt(eventValue.slice(pipeIndex + 1), 10);
-      if (!isNaN(parsed)) {
-        sceneName = eventValue.slice(0, pipeIndex);
-        cueTransitionTime = parsed;
-      }
-    }
+    const { sceneName, transitionTime: cueTransitionTime } = parseShowSceneValue(eventValue);
 
     const scene = await this.resolveScene(sceneName);
     if (!scene) {
@@ -179,7 +176,7 @@ export class HueClient {
 
   /** Event value: "groupId" or "groupId|sceneName" */
   async startFlicker(eventValue: string): Promise<void> {
-    const [groupId, sceneName] = eventValue.split("|");
+    const { groupId, sceneName } = parseFlickerValue(eventValue);
     if (!groupId) {
       console.error("[Hue] Start Flicker: missing group ID in event value", eventValue);
       return;
@@ -248,14 +245,11 @@ export class HueClient {
 
   /** Event value: "groupId|brightness|saturation"  e.g. "0|254|254" */
   async startColorloop(eventValue: string): Promise<void> {
-    const parts = eventValue.split("|");
-    const groupId = parts[0];
+    const { groupId, bri, sat } = parseColorloopValue(eventValue);
     if (!groupId) {
       console.error("[Hue] Start Colorloop: missing group ID in event value", eventValue);
       return;
     }
-    const bri = parseInt(parts[1], 10) || 254;
-    const sat = parseInt(parts[2], 10) || 254;
     this.clearEffectTimers();
 
     await this.reported(
@@ -279,12 +273,11 @@ export class HueClient {
 
   /** Event value: "groupId|speedMs"  e.g. "0|300" */
   async startParty(eventValue: string): Promise<void> {
-    const [groupId, speedStr] = eventValue.split("|");
+    const { groupId, speedMs: speed } = parsePartyValue(eventValue);
     if (!groupId) {
       console.error("[Hue] Start Party: missing group ID in event value", eventValue);
       return;
     }
-    const speed = Math.max(100, parseInt(speedStr, 10) || 300);
     this.clearEffectTimers();
 
     const groupResult = await hueGet("Fetch group lights", this.url(`groups/${groupId}`));

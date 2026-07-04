@@ -1,6 +1,6 @@
 {
   "name": "hue-plugin",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "dependencies": {
     "@clockworkdog/cogs-client-react": "^1.2.1",
@@ -15,6 +15,7 @@
     "build": "yarn build-content && yarn build-manifest",
     "test": "react-scripts test",
     "test:reliability": "tsc -p tsconfig.queue.json && node mock-bridge/queue-test.js",
+    "test:soak": "tsc -p tsconfig.queue.json && node mock-bridge/soak-test.js",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -36,6 +37,7 @@
   },
   "homepage": "./",
   "devDependencies": {
+    "@types/jest": "^27.5.2",
     "@types/node": "14",
     "@types/react": "17",
     "@types/react-dom": "17",
