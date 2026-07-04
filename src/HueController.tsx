@@ -29,6 +29,11 @@ export default function HueController({
   const transitionTime = useCogsConfig(connection)["Transition Time (Project Default)"];
 
   const clientRef = useRef<HueClient | null>(null);
+  // The default scene must fire only on genuine startup. Without this
+  // guard, any config re-delivery mid-show (COGS reconnect, a setting
+  // edited) recreates the client and would blast the default scene
+  // onstage.
+  const defaultSceneShownRef = useRef(false);
 
   useEffect(() => {
     if (!apiKey || !bridgeIpAddress) {
@@ -45,7 +50,8 @@ export default function HueController({
     clientRef.current = client;
 
     client.refreshScenes().then((ok) => {
-      if (ok && defaultScene) {
+      if (ok && defaultScene && !defaultSceneShownRef.current) {
+        defaultSceneShownRef.current = true;
         client.showScene(defaultScene);
       }
     });

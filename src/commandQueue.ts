@@ -48,6 +48,10 @@ const COSTS: Record<CommandKind, number> = { group: 8, light: 1 };
 const RATE = 9; // tokens/sec (bridge refills ~10/sec — headroom for jitter)
 const CAPACITY = 10;
 const RETRY_DELAY_MS = 250;
+// Measured on real hardware (bridge-probe2): once a bridge starts
+// returning "901 Internal error" it stays overloaded for a while —
+// a fast retry just hits the same wall. Back off longer for 901s.
+const OVERLOAD_RETRY_DELAY_MS = 800;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -189,10 +193,13 @@ export class CommandQueue {
 
         // Retry once — but never retry a command that has been superseded.
         if (!result.ok && !cmd.superseded && !this.disposed) {
+          const overloaded = result.errors.some((e) => e.includes("901"));
           console.warn(
-            `[Queue] ${cmd.label} failed (${result.errors.join("; ")}) — retrying once`
+            `[Queue] ${cmd.label} failed (${result.errors.join("; ")}) — retrying once${
+              overloaded ? " after overload backoff" : ""
+            }`
           );
-          await sleep(RETRY_DELAY_MS);
+          await sleep(overloaded ? OVERLOAD_RETRY_DELAY_MS : RETRY_DELAY_MS);
           if (!cmd.superseded && !this.disposed) {
             await this.waitForTokens(cost, cmd);
             if (!cmd.superseded && !this.disposed) {

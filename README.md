@@ -97,4 +97,39 @@ node mock-bridge/burst-test.js      # un-queued behavior: reproduces the old bug
 
 Test-only endpoints: `GET /_test/state`, `GET /_test/log`, `POST /_test/reset`.
 
+## Characterizing a real bridge
+
+Two probe scripts measure how an actual bridge behaves under load, so the
+queue's pacing can be tuned from data. They never touch group 0 or existing
+rooms: they pick reachable lights, save their state, run in a temporary
+`CC-Probe` group, then restore everything. Expect ~60s of light flashing.
+
+```
+BRIDGE_IP=192.168.x.x HUE_API_KEY=xxxx node mock-bridge/bridge-probe.js    # latency, burst behavior
+BRIDGE_IP=192.168.x.x HUE_API_KEY=xxxx node mock-bridge/bridge-probe2.js   # sustained load, overload cliff
+```
+
+**Run these against the show bridge with the full rig paired before tuning
+anything** — bridge tolerance depends on mesh size and RF environment.
+
+Findings from a BSB002 (fw 1977138000, api 1.77, 3-bulb mesh, quiet network):
+
+- ~55–70ms command latency; 2s client timeout is generous.
+- Sustained group commands were clean at 2/s and even 5/s (all applied,
+  no errors, no latency growth) — far above the documented ~1/s.
+- At ~12 group commands/s the bridge collapses: 86% of commands rejected
+  with `901 Internal error` (inside an HTTP 200), state updates stop, and
+  the overload persists briefly after the flood stops — hence the queue's
+  longer retry backoff on 901 errors.
+- Mixed load matters: light commands at 10/s alongside group commands at
+  just 1/s pushed 3/8 group commands into 901 errors. Group cues need
+  quiet air — which is exactly what the queue's serialized, cue-priority
+  design provides.
+- Caveat: state readback reflects the bridge's *cached belief*, not
+  confirmed bulb state. Zigbee delivery failures are invisible to the v1
+  API.
+
+The queue's defaults stay at the conservative documented rates until the
+show bridge itself has been probed.
+
 Note: Hue `transitiontime` values are in **deciseconds** (10 = 1 second).
