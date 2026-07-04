@@ -6,6 +6,7 @@ import {
 } from "@clockworkdog/cogs-client-react";
 import { useCallback, useEffect, useState } from "react";
 import { CogsConnectionParams } from "./App";
+import { hueGet, huePut } from "./hueApi";
 import { HueScenes } from "./types";
 
 const getScenesUrl = (ipAddress: string, apiKey: string) =>
@@ -67,22 +68,21 @@ export default function HueController() {
       console.warn("API Key not set");
       return;
     }
-    try {
-      const response = await fetch(getScenesUrl(bridgeIpAddress, apiKey), {
-        method: "GET",
-      });
-
-      if (response.status === 200) {
-        const scenesData = (await response.json()) as HueScenes;
-        setScenes(scenesData);
-        return scenesData;
+    const result = await hueGet("Fetch scenes", getScenesUrl(bridgeIpAddress, apiKey));
+    if (result.ok && result.json) {
+      const scenesData = result.json as HueScenes;
+      const names = Object.values(scenesData).map((s) => s.name);
+      const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
+      if (duplicates.length > 0) {
+        console.warn(
+          "[Hue] Duplicate scene names on bridge — name lookup may pick the wrong one:",
+          Array.from(new Set(duplicates)).join(", ")
+        );
       }
-
-      return undefined;
-    } catch (e) {
-      console.error("Error fetching Hue scenes", e);
-      return undefined;
+      setScenes(scenesData);
+      return scenesData;
     }
+    return undefined;
   }, [apiKey, bridgeIpAddress]);
 
   const showScene = useCallback(
@@ -125,13 +125,16 @@ export default function HueController() {
           if (effectiveTransitionTime !== undefined) {
             body.transitiontime = effectiveTransitionTime;
           }
-          await fetch(recallSceneUrl(bridgeIpAddress, apiKey), {
-            method: "PUT",
-            body: JSON.stringify(body),
-          });
+          await huePut(
+            `Show Scene "${sceneName}"`,
+            recallSceneUrl(bridgeIpAddress, apiKey),
+            body
+          );
+        } else {
+          console.error(`[Hue] Show Scene "${sceneName}": no scene with this name on bridge`);
         }
       } catch (e) {
-        console.error("Failed to set scene", sceneName);
+        console.error("Failed to set scene", sceneName, e);
       }
     },
     [getScenesFromBridge, apiKey, bridgeIpAddress, scenes, transitionTime]
@@ -166,10 +169,10 @@ export default function HueController() {
           if (refreshed) sceneId = findSceneByName(refreshed, sceneName);
         }
         if (sceneId) {
-          await fetch(url, {
-            method: "PUT",
-            body: JSON.stringify({ scene: sceneId, transitiontime: 0 }),
-          }).catch((e) => console.error("Flicker scene recall error", e));
+          await huePut(`Flicker scene recall "${sceneName}"`, url, {
+            scene: sceneId,
+            transitiontime: 0,
+          });
           // Short pause so lights settle into the scene before the alert fires
           await new Promise<void>((r) => setTimeout(r, 200));
         } else {
@@ -177,11 +180,7 @@ export default function HueController() {
         }
       }
 
-      const sendAlert = () =>
-        fetch(url, {
-          method: "PUT",
-          body: JSON.stringify({ alert: "lselect" }),
-        }).catch((e) => console.error("Flicker error", e));
+      const sendAlert = () => huePut("Flicker alert", url, { alert: "lselect" });
 
       await sendAlert();
 
@@ -197,10 +196,9 @@ export default function HueController() {
     const groupId = strobeGroupId;
     clearEffectIntervals();
     if (groupId) {
-      await fetch(groupActionUrl(bridgeIpAddress, apiKey, groupId), {
-        method: "PUT",
-        body: JSON.stringify({ alert: "none" }),
-      }).catch((e) => console.error("Stop flicker error", e));
+      await huePut("Stop flicker", groupActionUrl(bridgeIpAddress, apiKey, groupId), {
+        alert: "none",
+      });
     }
   }, [apiKey, bridgeIpAddress]);
 
@@ -215,10 +213,12 @@ export default function HueController() {
 
       clearEffectIntervals();
 
-      await fetch(groupActionUrl(bridgeIpAddress, apiKey, groupId), {
-        method: "PUT",
-        body: JSON.stringify({ on: true, bri, sat, effect: "colorloop" }),
-      }).catch((e) => console.error("Colorloop fetch error", e));
+      await huePut("Start colorloop", groupActionUrl(bridgeIpAddress, apiKey, groupId), {
+        on: true,
+        bri,
+        sat,
+        effect: "colorloop",
+      });
     },
     [apiKey, bridgeIpAddress]
   );
@@ -233,17 +233,13 @@ export default function HueController() {
 
       clearEffectIntervals();
 
-      let lightIds: string[] = [];
-      try {
-        const res = await fetch(groupUrl(bridgeIpAddress, apiKey, groupId));
-        if (res.ok) {
-          const data = await res.json();
-          lightIds = data.lights ?? [];
-        }
-      } catch (e) {
-        console.error("Failed to fetch group lights for party mode", e);
-        return;
-      }
+      const groupResult = await hueGet(
+        "Fetch group lights",
+        groupUrl(bridgeIpAddress, apiKey, groupId)
+      );
+      if (!groupResult.ok) return;
+      const lightIds: string[] =
+        (groupResult.json as { lights?: string[] } | undefined)?.lights ?? [];
 
       if (lightIds.length === 0) {
         console.warn("No lights found in group", groupId);
@@ -253,16 +249,13 @@ export default function HueController() {
       partyInterval = setInterval(() => {
         lightIds.forEach((lightId, i) => {
           setTimeout(() => {
-            fetch(lightStateUrl(bridgeIpAddress, apiKey, lightId), {
-              method: "PUT",
-              body: JSON.stringify({
-                on: true,
-                hue: Math.floor(Math.random() * 65536),
-                sat: 200 + Math.floor(Math.random() * 56),
-                bri: 200 + Math.floor(Math.random() * 56),
-                transitiontime: Math.max(1, Math.floor(speed / 100)),
-              }),
-            }).catch((e) => console.error("Party fetch error", e));
+            huePut(`Party light ${lightId}`, lightStateUrl(bridgeIpAddress, apiKey, lightId), {
+              on: true,
+              hue: Math.floor(Math.random() * 65536),
+              sat: 200 + Math.floor(Math.random() * 56),
+              bri: 200 + Math.floor(Math.random() * 56),
+              transitiontime: Math.max(1, Math.floor(speed / 100)),
+            });
           }, i * staggerMs);
         });
       }, speed);
@@ -275,10 +268,9 @@ export default function HueController() {
   const stopEffect = useCallback(
     async (groupId: string) => {
       clearEffectIntervals();
-      await fetch(groupActionUrl(bridgeIpAddress, apiKey, groupId), {
-        method: "PUT",
-        body: JSON.stringify({ effect: "none" }),
-      }).catch((e) => console.error("Stop effect fetch error", e));
+      await huePut("Stop effect", groupActionUrl(bridgeIpAddress, apiKey, groupId), {
+        effect: "none",
+      });
     },
     [apiKey, bridgeIpAddress]
   );
