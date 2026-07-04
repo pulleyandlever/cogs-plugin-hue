@@ -169,6 +169,46 @@ async function scenarioD() {
   client.dispose();
 }
 
+async function scenarioE() {
+  console.log("\n─── Scenario E: status events — command outcomes and bridge health");
+  await reset();
+  const events = [];
+  const client = new HueClient({
+    bridgeIp: `127.0.0.1:${PORT}`,
+    apiKey: "testkey",
+    onStatus: (e) => events.push(e),
+  });
+  await client.refreshScenes();
+
+  await client.showScene("Cue 1"); // should emit command/sent with scene
+  await client.showScene("No Such Scene"); // should emit command/failed
+  client.dispose();
+
+  // Unreachable bridge → command failed + bridge offline event
+  const deadEvents = [];
+  const deadClient = new HueClient({
+    bridgeIp: "127.0.0.1:9",
+    apiKey: "testkey",
+    onStatus: (e) => deadEvents.push(e),
+  });
+  await deadClient.showScene("Cue 1");
+  deadClient.dispose();
+
+  const sent = events.find((e) => e.type === "command" && e.outcome === "sent" && e.scene === "Cue 1");
+  const failed = events.find((e) => e.type === "command" && e.outcome === "failed" && e.scene === "No Such Scene");
+  const dupWarning = events.find((e) => e.type === "warning" && /Duplicate scene names/.test(e.message));
+  const offline = deadEvents.find((e) => e.type === "bridge" && e.online === false);
+  const deadFailed = deadEvents.find((e) => e.type === "command" && e.outcome === "failed");
+  console.log(`    live-bridge events: ${events.map((e) => e.type + ":" + (e.outcome ?? e.online ?? "warn")).join(", ")}`);
+  console.log(`    dead-bridge events: ${deadEvents.map((e) => e.type + ":" + (e.outcome ?? e.online ?? "warn")).join(", ")}`);
+  check(
+    "E",
+    "status events: sent/failed outcomes, duplicate warning, bridge-offline detection",
+    Boolean(sent && failed && dupWarning && offline && deadFailed),
+    `sent=${!!sent} failed=${!!failed} duplicate-warning=${!!dupWarning} offline-detected=${!!offline} dead-cue-failed=${!!deadFailed}`
+  );
+}
+
 async function main() {
   const server = spawn("node", [path.join(__dirname, "server.js")], {
     env: { ...process.env, PORT: String(PORT) },
@@ -190,6 +230,7 @@ async function main() {
     await scenarioB();
     await scenarioC();
     await scenarioD();
+    await scenarioE();
   } finally {
     server.kill();
   }

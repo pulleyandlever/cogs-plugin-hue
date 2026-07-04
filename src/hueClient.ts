@@ -3,15 +3,29 @@
 // that cues are never silently dropped by the bridge's rate limits and
 // a newer cue always supersedes a stale one.
 
-import { CommandQueue, QueuedCommandResult } from "./commandQueue";
-import { hueGet, huePut } from "./hueApi";
+import { CommandQueue, ExecuteResult, QueuedCommandResult } from "./commandQueue";
+import { HueCallResult, hueGet, huePut } from "./hueApi";
 import { HueScenes } from "./types";
+
+/** Emitted by HueClient so the UI and COGS can observe what's happening */
+export type HueStatusEvent =
+  | {
+      type: "command";
+      label: string;
+      outcome: "sent" | "superseded" | "failed";
+      /** Set for Show Scene commands */
+      scene?: string;
+      errors?: string[];
+    }
+  | { type: "bridge"; online: boolean }
+  | { type: "warning"; message: string };
 
 export interface HueClientConfig {
   bridgeIp: string;
   apiKey: string;
   /** Project-default transition time in deciseconds (Hue units) */
   defaultTransitionTime?: number;
+  onStatus?: (event: HueStatusEvent) => void;
 }
 
 interface SceneInfo {
@@ -31,14 +45,50 @@ export class HueClient {
 
   constructor(private config: HueClientConfig) {}
 
+  private bridgeOnline: boolean | undefined;
+
   private url(path: string): string {
     return `http://${this.config.bridgeIp}/api/${this.config.apiKey}/${path}`;
+  }
+
+  private emit(event: HueStatusEvent): void {
+    this.config.onStatus?.(event);
+  }
+
+  /** Bridge is "online" when it answered at all — even with an error body */
+  private noteBridgeResult(result: HueCallResult): void {
+    const online = result.httpStatus !== undefined;
+    if (online !== this.bridgeOnline) {
+      this.bridgeOnline = online;
+      this.emit({ type: "bridge", online });
+    }
+  }
+
+  /** PUT wrapped with bridge health tracking, for use inside queue commands */
+  private trackedPut(label: string, path: string, body: unknown): Promise<ExecuteResult> {
+    return huePut(label, this.url(path), body, PUT_TIMEOUT_MS).then((result) => {
+      this.noteBridgeResult(result);
+      return result;
+    });
+  }
+
+  /** Emit a command status event when a queued command settles */
+  private reported(
+    label: string,
+    scene: string | undefined,
+    promise: Promise<QueuedCommandResult>
+  ): Promise<QueuedCommandResult> {
+    void promise.then((result) =>
+      this.emit({ type: "command", label, outcome: result.outcome, scene, errors: result.errors })
+    );
+    return promise;
   }
 
   // ------------------------------------------------------------- scenes
 
   async refreshScenes(): Promise<boolean> {
     const result = await hueGet("Fetch scenes", this.url("scenes"));
+    this.noteBridgeResult(result);
     if (!result.ok || !result.json) return false;
 
     const byName = new Map<string, SceneInfo>();
@@ -56,10 +106,11 @@ export class HueClient {
       }
     }
     if (duplicates.size > 0) {
-      console.warn(
-        "[Hue] Duplicate scene names on bridge — using the most recently updated of each:",
-        Array.from(duplicates).join(", ")
-      );
+      const message = `Duplicate scene names on bridge — using the most recently updated of each: ${Array.from(
+        duplicates
+      ).join(", ")}`;
+      console.warn(`[Hue] ${message}`);
+      this.emit({ type: "warning", message });
     }
     this.scenesByName = byName;
     return true;
@@ -92,7 +143,15 @@ export class HueClient {
 
     const scene = await this.resolveScene(sceneName);
     if (!scene) {
-      console.error(`[Hue] Show Scene "${sceneName}": no scene with this name on bridge`);
+      const message = `Show Scene "${sceneName}": no scene with this name on bridge`;
+      console.error(`[Hue] ${message}`);
+      this.emit({
+        type: "command",
+        label: `Show Scene "${sceneName}"`,
+        outcome: "failed",
+        scene: sceneName,
+        errors: [`scene "${sceneName}" not found`],
+      });
       return { outcome: "failed", errors: [`scene "${sceneName}" not found`] };
     }
 
@@ -102,14 +161,18 @@ export class HueClient {
       body.transitiontime = transitionTime;
     }
 
-    return this.queue.enqueue({
-      key: "group:0:action",
-      kind: "group",
-      priority: "cue",
-      label: `Show Scene "${sceneName}"`,
-      execute: () =>
-        huePut(`Show Scene "${sceneName}"`, this.url("groups/0/action"), body, PUT_TIMEOUT_MS),
-    });
+    const label = `Show Scene "${sceneName}"`;
+    return this.reported(
+      label,
+      sceneName,
+      this.queue.enqueue({
+        key: "group:0:action",
+        kind: "group",
+        priority: "cue",
+        label,
+        execute: () => this.trackedPut(label, "groups/0/action", body),
+      })
+    );
   }
 
   // ------------------------------------------------------------ effects
@@ -123,24 +186,29 @@ export class HueClient {
     }
     this.clearEffectTimers();
     this.strobeGroupId = groupId;
-    const actionUrl = this.url(`groups/${groupId}/action`);
 
     if (sceneName) {
       const scene = await this.resolveScene(sceneName);
       if (scene) {
-        void this.queue.enqueue({
-          key: `group:${groupId}:action`,
-          kind: "group",
-          priority: "cue",
-          label: `Flicker scene recall "${sceneName}"`,
-          execute: () =>
-            huePut(`Flicker scene recall "${sceneName}"`, actionUrl, {
-              scene: scene.id,
-              transitiontime: 0,
-            }, PUT_TIMEOUT_MS),
-        });
+        const label = `Flicker scene recall "${sceneName}"`;
+        void this.reported(
+          label,
+          sceneName,
+          this.queue.enqueue({
+            key: `group:${groupId}:action`,
+            kind: "group",
+            priority: "cue",
+            label,
+            execute: () =>
+              this.trackedPut(label, `groups/${groupId}/action`, {
+                scene: scene.id,
+                transitiontime: 0,
+              }),
+          })
+        );
       } else {
         console.warn("Flicker: scene not found —", sceneName);
+        this.emit({ type: "warning", message: `Flicker: scene not found — ${sceneName}` });
       }
     }
 
@@ -150,10 +218,11 @@ export class HueClient {
         kind: "group",
         priority,
         label: "Flicker alert",
-        execute: () => huePut("Flicker alert", actionUrl, { alert: "lselect" }, PUT_TIMEOUT_MS),
+        execute: () =>
+          this.trackedPut("Flicker alert", `groups/${groupId}/action`, { alert: "lselect" }),
       });
 
-    void enqueueAlert("cue");
+    void this.reported(`Start Flicker (group ${groupId})`, undefined, enqueueAlert("cue"));
     // lselect runs for 15s — re-send every 10s to keep it going indefinitely
     this.strobeKeepAlive = setInterval(() => void enqueueAlert("effect"), 10000);
   }
@@ -162,14 +231,18 @@ export class HueClient {
     const groupId = this.strobeGroupId;
     this.clearEffectTimers();
     if (groupId) {
-      await this.queue.enqueue({
-        key: `group:${groupId}:alert`,
-        kind: "group",
-        priority: "cue",
-        label: "Stop flicker",
-        execute: () =>
-          huePut("Stop flicker", this.url(`groups/${groupId}/action`), { alert: "none" }, PUT_TIMEOUT_MS),
-      });
+      await this.reported(
+        "Stop Flicker",
+        undefined,
+        this.queue.enqueue({
+          key: `group:${groupId}:alert`,
+          kind: "group",
+          priority: "cue",
+          label: "Stop flicker",
+          execute: () =>
+            this.trackedPut("Stop flicker", `groups/${groupId}/action`, { alert: "none" }),
+        })
+      );
     }
   }
 
@@ -185,19 +258,23 @@ export class HueClient {
     const sat = parseInt(parts[2], 10) || 254;
     this.clearEffectTimers();
 
-    await this.queue.enqueue({
-      key: `group:${groupId}:action`,
-      kind: "group",
-      priority: "cue",
-      label: "Start colorloop",
-      execute: () =>
-        huePut("Start colorloop", this.url(`groups/${groupId}/action`), {
-          on: true,
-          bri,
-          sat,
-          effect: "colorloop",
-        }, PUT_TIMEOUT_MS),
-    });
+    await this.reported(
+      `Start Colorloop (group ${groupId})`,
+      undefined,
+      this.queue.enqueue({
+        key: `group:${groupId}:action`,
+        kind: "group",
+        priority: "cue",
+        label: "Start colorloop",
+        execute: () =>
+          this.trackedPut("Start colorloop", `groups/${groupId}/action`, {
+            on: true,
+            bri,
+            sat,
+            effect: "colorloop",
+          }),
+      })
+    );
   }
 
   /** Event value: "groupId|speedMs"  e.g. "0|300" */
@@ -211,7 +288,16 @@ export class HueClient {
     this.clearEffectTimers();
 
     const groupResult = await hueGet("Fetch group lights", this.url(`groups/${groupId}`));
-    if (!groupResult.ok) return;
+    this.noteBridgeResult(groupResult);
+    if (!groupResult.ok) {
+      this.emit({
+        type: "command",
+        label: `Start Party (group ${groupId})`,
+        outcome: "failed",
+        errors: groupResult.errors,
+      });
+      return;
+    }
     const lightIds: string[] =
       (groupResult.json as { lights?: string[] } | undefined)?.lights ?? [];
     if (lightIds.length === 0) {
@@ -231,13 +317,13 @@ export class HueClient {
           priority: "effect",
           label: `Party light ${lightId}`,
           execute: () =>
-            huePut(`Party light ${lightId}`, this.url(`lights/${lightId}/state`), {
+            this.trackedPut(`Party light ${lightId}`, `lights/${lightId}/state`, {
               on: true,
               hue: Math.floor(Math.random() * 65536),
               sat: 200 + Math.floor(Math.random() * 56),
               bri: 200 + Math.floor(Math.random() * 56),
               transitiontime: Math.max(1, Math.floor(speed / 100)),
-            }, PUT_TIMEOUT_MS),
+            }),
         });
       }
     };
@@ -249,14 +335,18 @@ export class HueClient {
   async stopEffect(groupId: string): Promise<void> {
     this.clearEffectTimers();
     this.queue.cancelPending("light:");
-    await this.queue.enqueue({
-      key: `group:${groupId}:action`,
-      kind: "group",
-      priority: "cue",
-      label: "Stop effect",
-      execute: () =>
-        huePut("Stop effect", this.url(`groups/${groupId}/action`), { effect: "none" }, PUT_TIMEOUT_MS),
-    });
+    await this.reported(
+      `Stop Effect (group ${groupId})`,
+      undefined,
+      this.queue.enqueue({
+        key: `group:${groupId}:action`,
+        kind: "group",
+        priority: "cue",
+        label: "Stop effect",
+        execute: () =>
+          this.trackedPut("Stop effect", `groups/${groupId}/action`, { effect: "none" }),
+      })
+    );
   }
 
   /** Show reset: stop all running effects (timers, pending frames, live flicker) */
@@ -271,12 +361,9 @@ export class HueClient {
         priority: "cue",
         label: "Stop flicker (show reset)",
         execute: () =>
-          huePut(
-            "Stop flicker (show reset)",
-            this.url(`groups/${strobeGroupId}/action`),
-            { alert: "none" },
-            PUT_TIMEOUT_MS
-          ),
+          this.trackedPut("Stop flicker (show reset)", `groups/${strobeGroupId}/action`, {
+            alert: "none",
+          }),
       });
     }
   }

@@ -27,6 +27,10 @@
       { "name": "Start Party", "value": { "type": "string" } },
       { "name": "Stop Effect", "value": { "type": "string" } }
     ],
-    "toCogs:": []
+    "toCogs": [
+      { "name": "Scene Shown", "value": { "type": "string" } },
+      { "name": "Cue Failed", "value": { "type": "string" } },
+      { "name": "Bridge Online", "value": { "type": "boolean" } }
+    ]
   }
 }

@@ -6,13 +6,22 @@ import {
 } from "@clockworkdog/cogs-client-react";
 import { useEffect, useRef } from "react";
 import { CogsConnectionParams } from "./App";
-import { HueClient } from "./hueClient";
+import { HueClient, HueStatusEvent } from "./hueClient";
 
 // Thin wiring layer: creates a HueClient from the COGS config and
 // forwards COGS events to it. All bridge logic (scene cache, command
 // queue, effect timers) lives in HueClient, outside React.
-export default function HueController() {
+export default function HueController({
+  onStatus,
+}: {
+  onStatus?: (event: HueStatusEvent) => void;
+}) {
   const connection = useCogsConnection<CogsConnectionParams>();
+
+  // Ref keeps the client's callback stable so a re-rendered inline
+  // onStatus prop doesn't tear down and recreate the client
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
 
   const apiKey = useCogsConfig(connection)["API Key"];
   const bridgeIpAddress = useCogsConfig(connection)["Bridge IP Address"];
@@ -31,6 +40,7 @@ export default function HueController() {
       bridgeIp: bridgeIpAddress,
       apiKey,
       defaultTransitionTime: transitionTime,
+      onStatus: (event) => onStatusRef.current?.(event),
     });
     clientRef.current = client;
 
