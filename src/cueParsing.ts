@@ -22,6 +22,47 @@ export function parseShowSceneValue(value: string): ShowSceneCue {
   return { sceneName: value };
 }
 
+export interface ShowSceneOnGroupCue {
+  groupId?: string;
+  sceneName?: string;
+  /** Deciseconds. NOTE: a cue value of 0 is treated as "unset" by the
+   *  engine (falls back to the project default) — this matches the
+   *  v0.2.1 plugin the show's cues were authored against. */
+  transitionTime?: number;
+}
+
+/** "groupId|sceneName" or "groupId|sceneName|transitionTime" (v0.2.1 compat) */
+export function parseShowSceneOnGroupValue(value: string): ShowSceneOnGroupCue {
+  const parts = value.split("|");
+  const parsed = parts[2] !== undefined ? parseInt(parts[2], 10) : NaN;
+  return {
+    groupId: parts[0] || undefined,
+    sceneName: parts[1] || undefined,
+    transitionTime: isNaN(parsed) ? undefined : parsed,
+  };
+}
+
+export interface BlackoutCue {
+  groupId?: string;
+  /** Deciseconds; 0 means "unset" — see ShowSceneOnGroupCue note */
+  transitionTime?: number;
+}
+
+/** "groupId" or "groupId|transitionTime" (v0.2.1 compat) */
+export function parseBlackoutValue(value: string): BlackoutCue {
+  const parts = value.split("|");
+  const parsed = parts[1] !== undefined ? parseInt(parts[1], 10) : NaN;
+  return {
+    groupId: parts[0] || undefined,
+    transitionTime: isNaN(parsed) ? undefined : parsed,
+  };
+}
+
+/** "groupId" — Strobe On/Off, Disco Balls On/Off (v0.2.1 compat) */
+export function parseGroupSwitchValue(value: string): { groupId?: string } {
+  return { groupId: value.split("|")[0] || undefined };
+}
+
 export interface FlickerCue {
   groupId?: string;
   sceneName?: string;

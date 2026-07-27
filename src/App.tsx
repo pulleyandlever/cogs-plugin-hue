@@ -18,6 +18,12 @@ export type CogsConnectionParams = {
   };
   inputEvents: {
     "Show Scene": string;
+    "Show Scene On Group": string;
+    "Blackout": string;
+    "Strobe On": string;
+    "Strobe Off": string;
+    "Disco Balls On": string;
+    "Disco Balls Off": string;
     "Start Flicker": string;
     "Stop Flicker": string;
     "Start Colorloop": string;

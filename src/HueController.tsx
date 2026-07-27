@@ -63,6 +63,22 @@ export default function HueController({
   }, [apiKey, bridgeIpAddress, transitionTime, defaultScene]);
 
   useCogsEvent(connection, "Show Scene", (value) => clientRef.current?.showScene(value));
+  useCogsEvent(connection, "Show Scene On Group", (value) =>
+    clientRef.current?.showSceneOnGroup(value)
+  );
+  useCogsEvent(connection, "Blackout", (value) => clientRef.current?.blackout(value));
+  useCogsEvent(connection, "Strobe On", (value) =>
+    clientRef.current?.setGroupPower(value, true, "Strobe On")
+  );
+  useCogsEvent(connection, "Strobe Off", (value) =>
+    clientRef.current?.setGroupPower(value, false, "Strobe Off")
+  );
+  useCogsEvent(connection, "Disco Balls On", (value) =>
+    clientRef.current?.setGroupPower(value, true, "Disco Balls On")
+  );
+  useCogsEvent(connection, "Disco Balls Off", (value) =>
+    clientRef.current?.setGroupPower(value, false, "Disco Balls Off")
+  );
   useCogsEvent(connection, "Start Flicker", (value) => clientRef.current?.startFlicker(value));
   useCogsEvent(connection, "Stop Flicker", () => clientRef.current?.stopFlicker());
   useCogsEvent(connection, "Start Colorloop", (value) => clientRef.current?.startColorloop(value));

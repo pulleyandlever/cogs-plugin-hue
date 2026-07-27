@@ -5,9 +5,12 @@
 
 import { CommandQueue, ExecuteResult, QueuedCommandResult } from "./commandQueue";
 import {
+  parseBlackoutValue,
   parseColorloopValue,
   parseFlickerValue,
+  parseGroupSwitchValue,
   parsePartyValue,
+  parseShowSceneOnGroupValue,
   parseShowSceneValue,
 } from "./cueParsing";
 import { HueCallResult, hueGet, huePut } from "./hueApi";
@@ -38,6 +41,7 @@ interface SceneInfo {
   id: string;
   name: string;
   lastupdated?: string;
+  lights?: string[];
 }
 
 const PUT_TIMEOUT_MS = 2000;
@@ -45,6 +49,10 @@ const PUT_TIMEOUT_MS = 2000;
 export class HueClient {
   private queue = new CommandQueue();
   private scenesByName = new Map<string, SceneInfo>();
+  /** Every scene per name (duplicates kept) — Show Scene On Group needs
+   *  all of them to pick the right zone's copy */
+  private scenesByNameAll = new Map<string, SceneInfo[]>();
+  private groupLightsCache = new Map<string, string[]>();
   private strobeGroupId: string | undefined;
   private strobeKeepAlive: ReturnType<typeof setInterval> | undefined;
   private partyInterval: ReturnType<typeof setInterval> | undefined;
@@ -121,17 +129,28 @@ export class HueClient {
     if (!result.ok || !result.json) return false;
 
     const byName = new Map<string, SceneInfo>();
+    const byNameAll = new Map<string, SceneInfo[]>();
     const duplicates = new Set<string>();
     for (const [id, scene] of Object.entries(result.json as HueScenes)) {
+      const info: SceneInfo = {
+        id,
+        name: scene.name,
+        lastupdated: scene.lastupdated,
+        lights: scene.lights,
+      };
+      const all = byNameAll.get(scene.name);
+      if (all) all.push(info);
+      else byNameAll.set(scene.name, [info]);
+
       const existing = byName.get(scene.name);
       if (existing) {
         duplicates.add(scene.name);
         // Names collide: keep the most recently updated scene
         if ((scene.lastupdated ?? "") > (existing.lastupdated ?? "")) {
-          byName.set(scene.name, { id, name: scene.name, lastupdated: scene.lastupdated });
+          byName.set(scene.name, info);
         }
       } else {
-        byName.set(scene.name, { id, name: scene.name, lastupdated: scene.lastupdated });
+        byName.set(scene.name, info);
       }
     }
     if (duplicates.size > 0) {
@@ -142,7 +161,26 @@ export class HueClient {
       this.emit({ type: "warning", message });
     }
     this.scenesByName = byName;
+    this.scenesByNameAll = byNameAll;
     return true;
+  }
+
+  private async getGroupLights(groupId: string): Promise<string[]> {
+    const cached = this.groupLightsCache.get(groupId);
+    if (cached) return cached;
+    const result = await hueGet("Fetch group lights", this.url(`groups/${groupId}`));
+    this.noteBridgeResult(result);
+    const lights = (result.json as { lights?: string[] } | undefined)?.lights ?? [];
+    if (lights.length > 0) this.groupLightsCache.set(groupId, lights);
+    return lights;
+  }
+
+  /** All scenes with this name whose lights overlap the given set */
+  private matchScenesForLights(sceneName: string, lightIds: string[]): SceneInfo[] {
+    const lightSet = new Set(lightIds);
+    return (this.scenesByNameAll.get(sceneName) ?? []).filter((s) =>
+      s.lights?.some((l) => lightSet.has(l))
+    );
   }
 
   private async resolveScene(sceneName: string): Promise<SceneInfo | undefined> {
@@ -195,6 +233,124 @@ export class HueClient {
     );
   }
 
+  // ------------------------------------------- v0.2.1 compat cues
+  // The April-2026 show was authored against a locally modified v0.2.1
+  // plugin (source recovered from its build's source map). These events
+  // reproduce its semantics exactly, but routed through the queue.
+
+  /** Event value: "groupId|sceneName" or "groupId|sceneName|transitionTime".
+   *  Recalls EVERY scene with the name whose lights overlap the group —
+   *  duplicate scene names across zones are deliberate in the show, and
+   *  this overlap filter is how the right zone's copy gets picked. */
+  async showSceneOnGroup(eventValue: string): Promise<QueuedCommandResult> {
+    const { groupId, sceneName, transitionTime: cueTt } = parseShowSceneOnGroupValue(eventValue);
+    const label = `Show Scene On Group "${sceneName ?? "?"}" (group ${groupId ?? "?"})`;
+    if (!groupId || !sceneName) {
+      const error = `expected "groupId|sceneName", got "${eventValue}"`;
+      console.error(`[Hue] ${label}: ${error}`);
+      this.emit({ type: "command", label, outcome: "failed", scene: sceneName, errors: [error] });
+      return { outcome: "failed", errors: [error] };
+    }
+
+    const groupLights = await this.getGroupLights(groupId);
+    let matches = this.matchScenesForLights(sceneName, groupLights);
+    if (matches.length === 0) {
+      await this.refreshScenes();
+      matches = this.matchScenesForLights(sceneName, groupLights);
+    }
+    if (matches.length === 0) {
+      const error = `no scene named "${sceneName}" overlaps group ${groupId}`;
+      console.error(`[Hue] ${label}: ${error}`);
+      this.emit({ type: "command", label, outcome: "failed", scene: sceneName, errors: [error] });
+      return { outcome: "failed", errors: [error] };
+    }
+
+    // v0.2.1 quirk preserved deliberately: a cue transition of 0 falls
+    // back to the project default (the show's cues were authored with
+    // this behavior in effect).
+    const transitionTime = cueTt ? cueTt : this.config.defaultTransitionTime;
+    const body: Record<string, unknown> = {};
+    if (transitionTime !== undefined) body.transitiontime = transitionTime;
+
+    // One queued command sends all matching scene recalls sequentially.
+    // Typically 1 scene, occasionally 2-3 duplicates: at the measured
+    // effective bridge cost (~2 tokens per group command) that still
+    // fits inside this command's cost-5 budget with the overload
+    // backoff as the safety net.
+    return this.reported(
+      label,
+      sceneName,
+      this.queue.enqueue({
+        key: `group:${groupId}:action`,
+        kind: "group",
+        priority: "cue",
+        label,
+        execute: async () => {
+          const errors: string[] = [];
+          for (const scene of matches) {
+            const result = await this.trackedPut(label, `groups/${groupId}/action`, {
+              ...body,
+              scene: scene.id,
+            });
+            errors.push(...result.errors);
+          }
+          return { ok: errors.length === 0, errors };
+        },
+      })
+    );
+  }
+
+  /** Event value: "groupId" or "groupId|transitionTime" — group off */
+  async blackout(eventValue: string): Promise<QueuedCommandResult> {
+    const { groupId, transitionTime: cueTt } = parseBlackoutValue(eventValue);
+    const label = `Blackout (group ${groupId ?? "?"})`;
+    if (!groupId) {
+      const error = `expected "groupId" or "groupId|transitionTime", got "${eventValue}"`;
+      console.error(`[Hue] ${label}: ${error}`);
+      this.emit({ type: "command", label, outcome: "failed", errors: [error] });
+      return { outcome: "failed", errors: [error] };
+    }
+    // Same v0.2.1 transition-0 fallback quirk as showSceneOnGroup
+    const transitionTime = cueTt ? cueTt : this.config.defaultTransitionTime;
+    const body: Record<string, unknown> = { on: false };
+    if (transitionTime !== undefined) body.transitiontime = transitionTime;
+    return this.reported(
+      label,
+      undefined,
+      this.queue.enqueue({
+        key: `group:${groupId}:action`,
+        kind: "group",
+        priority: "cue",
+        label,
+        execute: () => this.trackedPut(label, `groups/${groupId}/action`, body),
+      })
+    );
+  }
+
+  /** Strobe On/Off and Disco Balls On/Off: plain group power switch.
+   *  These groups are smart-plug relays (strobes, mirror-ball motors). */
+  async setGroupPower(eventValue: string, on: boolean, eventName: string): Promise<QueuedCommandResult> {
+    const { groupId } = parseGroupSwitchValue(eventValue);
+    const label = `${eventName} (group ${groupId ?? "?"})`;
+    if (!groupId) {
+      const error = `expected "groupId", got "${eventValue}"`;
+      console.error(`[Hue] ${label}: ${error}`);
+      this.emit({ type: "command", label, outcome: "failed", errors: [error] });
+      return { outcome: "failed", errors: [error] };
+    }
+    return this.reported(
+      label,
+      undefined,
+      this.queue.enqueue({
+        key: `group:${groupId}:action`,
+        kind: "group",
+        priority: "cue",
+        label,
+        execute: () => this.trackedPut(label, `groups/${groupId}/action`, { on }),
+      })
+    );
+  }
+
   // ------------------------------------------------------------ effects
 
   /** Event value: "groupId" or "groupId|sceneName" */
@@ -204,6 +360,36 @@ export class HueClient {
       console.error("[Hue] Start Flicker: missing group ID in event value", eventValue);
       return;
     }
+
+    // v0.2.1 compat: a bare "groupId" (no scene) is the old one-shot
+    // triple flash — alert:select ×3, 600ms apart, ends on its own. The
+    // April show's cues rely on it self-ending; they never send Stop
+    // Flicker. "groupId|sceneName" keeps the v0.3 indefinite behavior.
+    if (!sceneName) {
+      this.clearEffectTimers();
+      const generation = this.effectGeneration;
+      const flash = (n: number) =>
+        this.reported(
+          `Flicker flash ${n}/3 (group ${groupId})`,
+          undefined,
+          this.queue.enqueue({
+            // Distinct keys so the three flashes don't coalesce away
+            key: `group:${groupId}:alert:${n}`,
+            kind: "group",
+            priority: "effect",
+            label: `Flicker flash ${n}/3`,
+            execute: () =>
+              this.trackedPut(`Flicker flash ${n}/3`, `groups/${groupId}/action`, {
+                alert: "select",
+              }),
+          })
+        );
+      void flash(1);
+      setTimeout(() => generation === this.effectGeneration && void flash(2), 600);
+      setTimeout(() => generation === this.effectGeneration && void flash(3), 1200);
+      return;
+    }
+
     this.clearEffectTimers();
     const generation = this.effectGeneration;
     this.strobeGroupId = groupId;
@@ -286,9 +472,11 @@ export class HueClient {
         kind: "group",
         priority: "cue",
         label: "Start colorloop",
+        // No `on: true` — v0.2.1 deliberately omitted it: with zones
+        // sharing a room, `on` switches on every light in the group and
+        // bleeds across zones. Colorloop applies to lights already on.
         execute: () =>
           this.trackedPut("Start colorloop", `groups/${groupId}/action`, {
-            on: true,
             bri,
             sat,
             effect: "colorloop",

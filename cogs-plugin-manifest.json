@@ -1,8 +1,9 @@
 {
   "name": "Hue Control",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Reliable Hue controller with cue queueing and status reporting",
   "icon": "lightbulb-on",
+  "window": { "width": 460, "height": 640, "visible": true },
   "config": [
     { "name": "API Key", "value": { "type": "string" } },
     {
@@ -21,6 +22,12 @@
   "events": {
     "fromCogs": [
       { "name": "Show Scene", "value": { "type": "string" } },
+      { "name": "Show Scene On Group", "value": { "type": "string" } },
+      { "name": "Blackout", "value": { "type": "string" } },
+      { "name": "Strobe On", "value": { "type": "string" } },
+      { "name": "Strobe Off", "value": { "type": "string" } },
+      { "name": "Disco Balls On", "value": { "type": "string" } },
+      { "name": "Disco Balls Off", "value": { "type": "string" } },
       { "name": "Start Flicker", "value": { "type": "string" } },
       { "name": "Stop Flicker", "value": { "type": "option", "options": ["stop"] } },
       { "name": "Start Colorloop", "value": { "type": "string" } },

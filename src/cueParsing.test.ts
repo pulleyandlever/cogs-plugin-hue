@@ -1,9 +1,86 @@
 import {
+  parseBlackoutValue,
   parseColorloopValue,
   parseFlickerValue,
+  parseGroupSwitchValue,
   parsePartyValue,
+  parseShowSceneOnGroupValue,
   parseShowSceneValue,
 } from "./cueParsing";
+
+describe("parseShowSceneOnGroupValue", () => {
+  it("group and scene", () => {
+    expect(parseShowSceneOnGroupValue("83|Blackout")).toEqual({
+      groupId: "83",
+      sceneName: "Blackout",
+      transitionTime: undefined,
+    });
+  });
+
+  it("group, scene, and transition time", () => {
+    expect(parseShowSceneOnGroupValue("84|Act 1|10")).toEqual({
+      groupId: "84",
+      sceneName: "Act 1",
+      transitionTime: 10,
+    });
+  });
+
+  it("missing scene name", () => {
+    expect(parseShowSceneOnGroupValue("83")).toEqual({
+      groupId: "83",
+      sceneName: undefined,
+      transitionTime: undefined,
+    });
+  });
+
+  it("empty string", () => {
+    expect(parseShowSceneOnGroupValue("")).toEqual({
+      groupId: undefined,
+      sceneName: undefined,
+      transitionTime: undefined,
+    });
+  });
+
+  it("non-numeric transition time is ignored", () => {
+    expect(parseShowSceneOnGroupValue("83|Scene|fast")).toEqual({
+      groupId: "83",
+      sceneName: "Scene",
+      transitionTime: undefined,
+    });
+  });
+});
+
+describe("parseBlackoutValue", () => {
+  it("group only", () => {
+    expect(parseBlackoutValue("83")).toEqual({ groupId: "83", transitionTime: undefined });
+  });
+
+  it("group with transition time", () => {
+    expect(parseBlackoutValue("83|20")).toEqual({ groupId: "83", transitionTime: 20 });
+  });
+
+  it("transition 0 parses as 0 (engine applies the v0.2.1 default-fallback quirk)", () => {
+    expect(parseBlackoutValue("83|0")).toEqual({ groupId: "83", transitionTime: 0 });
+  });
+
+  it("empty string", () => {
+    expect(parseBlackoutValue("")).toEqual({ groupId: undefined, transitionTime: undefined });
+  });
+});
+
+describe("parseGroupSwitchValue", () => {
+  it("plain group id", () => {
+    expect(parseGroupSwitchValue("85")).toEqual({ groupId: "85" });
+  });
+
+  it("ignores extra pipe segments", () => {
+    expect(parseGroupSwitchValue("85|junk")).toEqual({ groupId: "85" });
+  });
+
+  it("empty string", () => {
+    expect(parseGroupSwitchValue("")).toEqual({ groupId: undefined });
+  });
+});
 
 describe("parseShowSceneValue", () => {
   it("plain scene name", () => {
