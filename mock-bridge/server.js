@@ -2,11 +2,14 @@
 // Mock Philips Hue bridge (v1 API subset) for reliability testing.
 //
 // Models the bridge's real-world failure mode: a shared Zigbee radio
-// budget of ~10 messages/sec, where a group command (broadcast) costs 8
-// tokens and an individual light command costs 1. This reproduces
-// Philips' documented guidance (~1 group command/sec, ~10 light
-// commands/sec) and the interaction where heavy light traffic starves
-// group/scene commands.
+// budget of ~10 messages/sec, where a group command (broadcast) costs 2
+// tokens and an individual light command costs 1. Group cost is
+// MEASURED, not Philips' documented ~1 group/sec: both the 3-bulb home
+// bridge and the 25-device show bridge (bridge-probe2, 2026-07-18)
+// sustain 5 group commands/sec with zero errors and collapse near
+// 12/sec, i.e. an effective group cost of ~2 at a 10/sec refill. The
+// mixed-load interaction (heavy light traffic starving group/scene
+// commands) is preserved.
 //
 // Over-budget behavior (OVERLOAD env):
 //   drop (default) — silently dropped behind an HTTP 200 success body:
@@ -41,7 +44,7 @@ const PORT = parseInt(process.env.PORT || "8090", 10);
 const OVERLOAD = process.env.OVERLOAD || "drop"; // "drop" | "901" | "503"
 const FLAKY_DROP = parseFloat(process.env.FLAKY_DROP || "0");
 const RECOVERY_MS = 1000; // measured: overload persists after the flood stops
-const GROUP_COST = 8;
+const GROUP_COST = 2;
 const LIGHT_COST = 1;
 const RADIO_RATE = 10; // tokens/sec
 const RADIO_CAP = 10;

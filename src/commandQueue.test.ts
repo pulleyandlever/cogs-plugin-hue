@@ -156,15 +156,14 @@ describe("CommandQueue", () => {
   });
 
   it("rate budget: a group command after a burst waits for tokens", async () => {
-    // Drain the 10-token budget with a group command (cost 8) + 2 lights
+    // Drain the 10-token budget with two group commands (cost 5 each)
     await queue.enqueue(cmd({ key: "g1", kind: "group" }));
-    await queue.enqueue(cmd({ key: "l1" }));
-    await queue.enqueue(cmd({ key: "l2" }));
+    await queue.enqueue(cmd({ key: "g2", kind: "group" }));
 
     const t0 = Date.now();
-    await queue.enqueue(cmd({ key: "g2", kind: "group" }));
+    await queue.enqueue(cmd({ key: "g3", kind: "group" }));
     const waited = Date.now() - t0;
-    // Needs 8 tokens at 9/sec ≈ 890ms (minus jitter margin)
-    expect(waited).toBeGreaterThan(500);
+    // Needs 5 tokens at 8/sec ≈ 625ms (minus jitter margin)
+    expect(waited).toBeGreaterThan(400);
   });
 });

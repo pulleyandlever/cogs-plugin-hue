@@ -8,6 +8,7 @@
 // latency growth over the window.
 //
 // Usage: BRIDGE_IP=... HUE_API_KEY=... node mock-bridge/bridge-probe2.js
+//   TEST_LIGHTS=2,3 to override auto-selection of reachable lights.
 
 const BRIDGE_IP = process.env.BRIDGE_IP;
 const API_KEY = process.env.HUE_API_KEY;
@@ -98,9 +99,11 @@ async function sustained(groupId, watchLight, intervalMs, seconds) {
 async function main() {
   // pick reachable lights & make probe group
   const lightsRes = await call("GET", "/lights");
-  const testLights = Object.entries(lightsRes.json)
-    .filter(([, l]) => l.state.reachable)
-    .map(([id]) => id);
+  const testLights = process.env.TEST_LIGHTS
+    ? process.env.TEST_LIGHTS.split(",")
+    : Object.entries(lightsRes.json)
+        .filter(([, l]) => l.state.reachable)
+        .map(([id]) => id);
   const saved = {};
   for (const id of testLights) {
     const st = lightsRes.json[id].state;

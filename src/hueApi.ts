@@ -24,8 +24,13 @@ function extractV1Errors(json: unknown): string[] {
   return json
     .filter((entry) => entry && typeof entry === "object" && "error" in entry)
     .map((entry) => {
-      const err = (entry as { error: { description?: string; address?: string } }).error;
-      return `${err.description ?? "unknown error"}${err.address ? ` (${err.address})` : ""}`;
+      const err = (entry as { error: { type?: number; description?: string; address?: string } })
+        .error;
+      // Keep the numeric type in the string: the queue's overload
+      // detection looks for "901", which never appears in the bridge's
+      // description text ("Internal error, 404").
+      const type = err.type !== undefined ? `${err.type}: ` : "";
+      return `${type}${err.description ?? "unknown error"}${err.address ? ` (${err.address})` : ""}`;
     });
 }
 

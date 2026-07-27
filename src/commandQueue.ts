@@ -44,7 +44,11 @@ interface QueuedCommand extends EnqueueOptions {
   settled: boolean;
 }
 
-const COSTS: Record<CommandKind, number> = { group: 8, light: 1 };
+// group cost tuned on the show bridge (2026-07-18, 25-device mesh,
+// 10-light probe group): clean sustained at 5 group/s with zero
+// in-body errors, collapse (901s) only at ~12/s. Cost 5 allows
+// ~1.8 cues/s sustained and 2 instant back-to-back GOs.
+const COSTS: Record<CommandKind, number> = { group: 5, light: 1 };
 // tokens/sec. The bridge refills ~10/sec; the 30-minute soak showed
 // that at 9/sec sustained saturation leaves group commands only ~1
 // token of margin at the bridge and ~20% of them get dropped. 8/sec
